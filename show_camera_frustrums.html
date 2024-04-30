@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <style>
+        body {
+            height: 100vh;
+            margin: 0;
+        }
+
+        canvas {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 1000px;
+            height: 1000px;
+            /* border: solid gray 1px; */
+            z-index: 0;
+        }
+
+        img {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%) scaleX(-1) rotate(90deg);
+            width: 600px;
+            aspect-ratio: 3/2;
+            z-index: -1;
+            user-select: none;
+        }
+
+        #properties {
+            display: flex;
+            flex-direction: column;
+            position: absolute;
+        }
+
+        .prop {
+            display: flex;
+        }
+
+        .prop>input {
+            width: 400px;
+        }
+
+        .prop>label:first-of-type {
+            display: block;
+            width: 200px;
+        }
+    </style>
+</head>
+
+<body>
+    <button id="add_camera">Add camera</button>
+    <input id="open_camera" type="file"></input>
+    <img src="./table.png">
+    <canvas id="cvs"></canvas>
+    <div id="properties"></div>
+    <script>
+        const cvs = document.getElementById("cvs");
+        const ctx = cvs.getContext("2d");
+        const cvs_size = { width: 1000, height: 1000 };
+        cvs.width = cvs_size.width;
+        cvs.height = cvs_size.height;
+        cvs.imageSmoothingEnabled = false;
+
+        const properties_dom = document.getElementById("properties");
+        properties_dom.innerHTML = "";
+
+        const add_camera_button = document.getElementById("add_camera");
+        const open_camera_button = document.getElementById("open_camera");
+
+        let offset_x = 0;
+
+        const deg2rad = (deg) => { return deg * Math.PI / 180 };
+        const rad2deg = (rad) => { return rad / Math.PI * 180 };
+
+        let properties = [];
+        let cameras = [];
+        let dom_cameras_count = 0;
+
+        const add_property = (prop) => {
+            const child = document.createElement("div");
+            const slider = document.createElement("input");
+            const label_name = document.createElement("label");
+            const label = document.createElement("label");
+            child.classList.add("prop");
+            slider.type = "range";
+            slider.id = prop.name;
+            slider.min = prop.min;
+            slider.max = prop.max;
+            slider.step = prop.step;
+            slider.value = prop.default;
+            label.setAttribute("for", prop.name)
+            label.innerText = slider.value;
+            label_name.setAttribute("for", prop.name)
+            label_name.innerText = prop.name;
+            slider.oninput = (val) => { label.innerText = slider.value; prop.setter(parseFloat(slider.value)) };
+            child.appendChild(label_name);
+            child.appendChild(slider);
+            child.appendChild(label);
+            properties_dom.appendChild(child);
+        }
+
+        const refresh_properties = () => {
+            for (let index = dom_cameras_count; index < properties.length; index++) {
+                add_property(properties[index]);
+            };
+            dom_cameras_count = properties_dom.length;
+        };
+
+        const add_camera = (camera) => {
+            const index = cameras.length;
+            cameras.push(camera);
+            // add_property({
+            //     name: "camera_" + index + "_x", min: -150, max: 150, step: 1, default: camera.x, setter: (val) => { camera.x = val }
+            // });
+            // add_property({
+            //     name: "camera_" + index + "_y", min: -200, max: 200, step: 1, default: camera.y, setter: (val) => { camera.y = val }
+            // });
+            add_property({
+                name: "camera_" + index + "_z", min: -10, max: 200, step: 1, default: camera.z, setter: (val) => { camera.z = val }
+            });
+            add_property({
+                name: "camera_" + index + "_hfov", min: 0, max: 180, step: 1, default: rad2deg(camera.fov_x), setter: (val) => { camera.fov_x = deg2rad(val) }
+            });
+            add_property({
+                name: "camera_" + index + "_vfov", min: 0, max: 180, step: 1, default: rad2deg(camera.fov_y), setter: (val) => { camera.fov_y = deg2rad(val) }
+            });
+            add_property({
+                name: "camera_" + index + "_yaw", min: -180, max: 180, step: 1, default: rad2deg(camera.yaw), setter: (val) => { camera.yaw = deg2rad(val) }
+            });
+            add_property({
+                name: "camera_" + index + "_pitch", min: -90, max: 45, step: 1, default: rad2deg(camera.pitch), setter: (val) => { camera.pitch = deg2rad(val) }
+            });
+            // refresh_properties();
+        }
+
+        const add_default_camera = () => {
+            const camera = { x: -100, y: 0, z: 160, fov_x: deg2rad(69), fov_y: deg2rad(55), pitch: deg2rad(-45), yaw: deg2rad(0), pointer_distance: 1000 };
+            add_camera(camera)
+        }
+
+        // add_default_camera();
+
+        add_camera_button.onclick = () => {
+            add_default_camera();
+        }
+
+        open_camera_button.oninput = (e) => {
+            const file = open_camera_button.files[0];
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const json = JSON.parse(e.target.result);
+                add_camera({ x: json.x, y: json.y, z: json.z, fov_x: deg2rad(json.fov_x), fov_y: deg2rad(json.fov_y), pitch: deg2rad(json.pitch), yaw: deg2rad(json.yaw), pointer_distance: 1000 });
+            };
+            reader.readAsText(file);
+            open_camera_button.value = null;
+        }
+
+        const table = { width: 200, height: 300 };
+
+        const colors = ["blue", "red", "green", "purple", "orange", "yellow", "turquoise"];
+        const getColor = (index = 0) => { return colors[index % colors.length] };
+
+        const scale_factor = 2;
+
+        const project = (camera, ray) => {
+            const alpha = -camera.z / ray.z;
+            // console.log(ray.y);
+            return { x: camera.x + alpha * ray.x, y: camera.y + alpha * ray.y };
+        }
+
+        const rotate = (x, y, z, yaw_in, pitch_in, yaw_first = true) => {
+            const yaw = yaw_in;
+            const pitch = pitch_in;
+            const cy = Math.cos(yaw);
+            const cp = Math.cos(pitch);
+            const sy = Math.sin(yaw);
+            const sp = Math.sin(pitch);
+            if (yaw_first) {
+                return { x: cy * cp * x - sy * y + cy * sp * z, y: sy * cp * x + cy * y + sy * sp * z, z: -sp * x + cp * z };  // Yaw*Pitch
+            } else {
+                return { x: cp * cy * x - cp * sy * y + sp * z, y: sy * x + cy * y, z: -sp * cy * x + sp * sy * y + cp * z };  // Pitch*Yaw
+            }
+            // return { x: cp * cy * x - cp * sy * y - sp * z, y: sy * x + cy * y, z: sp * cy * x - sp * sy * y + cp * z };  // Pitch*Yaw
+            // return { x: cyaw * cpitch * x - syaw * y + cyaw * spitch * z, y: syaw * cpitch * x + cyaw * y - syaw * spitch * z, z: spitch * x + cpitch * z };  // Yaw*Pitch
+        }
+
+        // const getCorners = (camera, dir) => {
+        //     const first  = rotate(dir.x, dir.y, dir.z, -camera.fov_x / 2, +camera.fov_y / 2);
+        //     const second = rotate(dir.x, dir.y, dir.z, -camera.fov_x / 2, -camera.fov_y / 2);
+        //     const third  = rotate(dir.x, dir.y, dir.z, +camera.fov_x / 2, -camera.fov_y / 2);
+        //     const fourth = rotate(dir.x, dir.y, dir.z, +camera.fov_x / 2, +camera.fov_y / 2);
+        //     // console.log(first);
+        //     // console.log(camera.pitch+camera.fov_y/2);
+        //     let values = [first, second, third, fourth];
+        //     // values = values.map(el => {if (el.z>0) {return {x: el.x, y: el.y, z: -0.001}} else {return el}});
+        //     // if (values.find(el => {return el.z>0})) {
+        //     //     return undefined
+        //     // } else {
+        //     return values.map(el => {return project(camera, el)});
+        //     // }
+        //     // return [
+        //     //     { x: camera.x + first_alpha * first.x, y: camera.y + first_alpha * first.y },
+        //     //     { x: camera.x + second_alpha * second.x, y: camera.y + second_alpha * second.y },
+        //     //     { x: camera.x + third_alpha * third.x, y: camera.y + third_alpha * third.y },
+        //     //     { x: camera.x + fourth_alpha * fourth.x, y: camera.y + fourth_alpha * fourth.y }
+        //     // ]
+        // }
+        const getCorners = (camera) => {
+            const tmp_first = rotate(1, 0, 0, - camera.fov_x / 2, camera.fov_y / 2);
+            const tmp_second = rotate(1, 0, 0, - camera.fov_x / 2, -camera.fov_y / 2);
+            const tmp_third = rotate(1, 0, 0, camera.fov_x / 2, -camera.fov_y / 2);
+            const tmp_fourth = rotate(1, 0, 0, camera.fov_x / 2, camera.fov_y / 2);
+            const first = rotate(tmp_first.x, tmp_first.y, tmp_first.z, -camera.yaw, -camera.pitch);
+            const second = rotate(tmp_second.x, tmp_second.y, tmp_second.z, -camera.yaw, -camera.pitch);
+            const third = rotate(tmp_third.x, tmp_third.y, tmp_third.z, -camera.yaw, -camera.pitch);
+            const fourth = rotate(tmp_fourth.x, tmp_fourth.y, tmp_fourth.z, -camera.yaw, -camera.pitch);
+            let values = [first, second, third, fourth];
+            // console.log(values);
+            values = values.map(el => { if (el.z > 0) { return { x: el.x, y: el.y, z: -0.001 } } else { return el } });
+            // if (values.find(el => {return el.z>0})) {
+            //     return undefined
+            // } else {
+            return values.map(el => project(camera, el))
+            // }
+            // return [
+            //     { x: camera.x + first_alpha * first.x, y: camera.y + first_alpha * first.y },
+            //     { x: camera.x + second_alpha * second.x, y: camera.y + second_alpha * second.y },
+            //     { x: camera.x + third_alpha * third.x, y: camera.y + third_alpha * third.y },
+            //     { x: camera.x + fourth_alpha * fourth.x, y: camera.y + fourth_alpha * fourth.y }
+            // ]
+        }
+
+        const arrayRange = (start, stop, step) =>
+            Array.from(
+                { length: (stop - start) / step + 1 },
+                (value, index) => start + index * step
+            )
+
+        const get_points = (camera) => {
+            const x_range = arrayRange(-camera.fov_x / 2, camera.fov_x / 2, 0.1);
+            const y_range = arrayRange(-camera.fov_y / 2, camera.fov_y / 2, 0.1);
+            const rays = [];
+            x_range.forEach(x => {
+                y_range.forEach(y => {
+                    const eltmp = rotate(1, 0, 0, x, y);
+                    const el = rotate(eltmp.x, eltmp.y, eltmp.z, -camera.yaw, -camera.pitch);
+                    rays.push(project(camera, el));
+                })
+            })
+            return rays;
+        }
+
+        let is_dragging = undefined;
+        cvs.onpointermove = (e) => {
+            const x = (e.offsetX - cvs_size.width / 2) / scale_factor;
+            const y = (e.offsetY - cvs_size.height / 2) / scale_factor;
+            cameras.forEach(camera => {
+                camera.pointer_distance = Math.sqrt((camera.x - x) ** 2 + (camera.y + y) ** 2)
+            });
+            if (is_dragging !== undefined) {
+                is_dragging.x = x;
+                is_dragging.y = -y;
+            }
+        };
+
+        cvs.onpointerdown = (e) => {
+            const hovered_camera = cameras.find(cam => {
+                return cam.pointer_distance < 5;
+            });
+            if (hovered_camera !== undefined) {
+                is_dragging = hovered_camera;
+            }
+        }
+
+        document.onpointerup = (e) => {
+            is_dragging = undefined;
+        }
+
+        const clamp = (x, a, b) => {
+            return Math.max(Math.min(x, b), a);
+        }
+
+        const frame = () => {
+            window.requestAnimationFrame(frame);
+
+            // Clear canvas
+            cvs.width = cvs.width;
+
+            // Draw table
+            ctx.translate(cvs_size.width / 2, cvs_size.height / 2);
+            ctx.scale(scale_factor, -scale_factor);
+
+            ctx.beginPath();
+            ctx.rect(-table.width / 2, -table.height / 2, table.width, table.height);
+            ctx.stroke();
+
+            cameras.forEach((camera, index) => {
+                // const dir = { x: Math.cos(camera.pitch) * Math.cos(camera.yaw), y: Math.cos(camera.pitch) * Math.sin(camera.yaw), z: Math.sin(camera.pitch) };
+                const dir = rotate(1, 0, 0, -camera.yaw, -camera.pitch);//{ x: Math.cos(camera.pitch) * Math.cos(camera.yaw), y: Math.cos(camera.pitch) * Math.sin(camera.yaw), z: Math.sin(camera.pitch) };
+                const intersection = project(camera, dir);
+                ctx.beginPath();
+                ctx.fillStyle = getColor(index);
+                const size = clamp(10 / (0.1 + camera.pointer_distance), 2, 5);
+                ctx.arc(camera.x, camera.y, size, 0, 2 * Math.PI);
+                ctx.fill();
+
+                // const corners = getCorners(camera, dir);
+                const corners = getCorners(camera);
+                if (corners !== undefined) {
+                    ctx.strokeStyle = getColor(index);
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(corners[0].x, corners[0].y);
+                    ctx.lineTo(corners[1].x, corners[1].y);
+                    ctx.lineTo(corners[2].x, corners[2].y);
+                    ctx.lineTo(corners[3].x, corners[3].y);
+                    ctx.closePath();
+                    ctx.stroke();
+                }
+                const rays = get_points(camera);
+                rays.forEach(ray => {
+                    ctx.beginPath();
+                    ctx.fillStyle = getColor(index + 3);
+                    ctx.arc(ray.x, ray.y, 1.5, 0, 2 * Math.PI);
+                    ctx.fill();
+                })
+            });
+
+            ctx.scale(1 / scale_factor, -1 / scale_factor);
+            ctx.translate(-cvs_size.width / 2, -cvs_size.height / 2);
+        }
+
+        window.requestAnimationFrame(frame);
+    </script>
+</body>
+
+</html>
